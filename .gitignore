@@ -1,0 +1,43 @@
+# Dataset — too large for git (195 GB, 7313 files)
+dataset/*.h5
+dataset/*.nc
+dataset/*.npz
+dataset/*.zarr
+
+# Training outputs
+training/results/
+training/scripts/results.*
+*.log
+*.out
+*.err
+*.nsys-rep
+*.ncu-rep
+profiler_traces/
+gif_out/
+spectra_out/
+acc_plots/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Docker
+.docker/
+
+# Conda / pip
+*.conda
+pip-log.txt

@@ -1,0 +1,19 @@
+FROM nvcr.io/nvidia/pytorch:25.03-py3
+
+# Install all Pangu S2S Python dependencies
+RUN pip install --no-cache-dir \
+    wandb \
+    einops \
+    timm \
+    "ruamel.yaml" \
+    xarray \
+    h5py \
+    cartopy \
+    cftime \
+    pandas \
+    psutil \
+    tqdm \
+    netcdf4 \
+    h5netcdf
+
+WORKDIR /workspace
