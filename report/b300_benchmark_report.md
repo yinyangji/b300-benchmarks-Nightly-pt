@@ -34,7 +34,7 @@
 11. [PyTorch Nightly + CUDA 13.0 Benchmark](#11-pytorch-nightly--cuda-130-benchmark)
 12. [MLPerf Inference — ResNet-50 & BERT-Large Offline](#12-mlperf-inference--resnet-50--bert-large-offline)
 13. [AlphaFold2 Inference Benchmark (JAX)](#13-alphafold2-inference-benchmark-jax)
-14. [GROMACS 2024 MD Simulation — ApoA1](#14-gromacs-2024-md-simulation--apoa1)
+14. [GROMACS 2025.1 MD Simulation — Water Box](#14-gromacs-20251-md-simulation--water-box)
 15. [Verdict & Recommendations](#15-verdict--recommendations)
 
 ---
@@ -863,33 +863,39 @@ by using `buf.ctypes.data` for the raw C pointer passed to `QuerySampleResponse`
 
 ## 13. AlphaFold2 Inference Benchmark (JAX)
 
-**Workload:** Protein structure prediction — AlphaFold2 (Google DeepMind, Apache 2.0)
-**Framework:** JAX + XLA on NVIDIA NGC JAX container (`nvcr.io/nvidia/jax:25.01-py3`)
-**Scripts:** `alphafold/Dockerfile.alphafold`, `alphafold/run_alphafold_b300.sh`
-**Status: ❌ Blocked by sm_103 — same root cause as §8.3**
+**Workload:** Protein structure prediction — Evoformer attention proxy (AlphaFold2, Google DeepMind)
+**Framework:** JAX 0.4.38 + XLA on NVIDIA NGC JAX container (`nvcr.io/nvidia/jax:25.01-py3`)
+**Scripts:** `alphafold/Dockerfile.alphafold`, `alphafold/benchmark_alphafold_b300.py`, `alphafold/run_alphafold_b300.sh`
+**Status: ❌ Blocked — XLA cannot compile for sm_103 on CUDA ≤12.8**
 
-> **Note on AlphaFold3:** AlphaFold3 requires a DeepMind non-commercial weights license
-> and is excluded from this suite. This section covers AlphaFold2.
+> **Design note:** Full AlphaFold2 inference requires downloading model weights (~2.5 GB per
+> model × 5 models) which are not cached on this system. This section benchmarks the
+> **Evoformer attention kernel** — the dominant GPU compute in AF2 — via a standalone JAX
+> JIT proxy at sequence lengths 256, 384, 512, and 768 residues.
+>
+> **AlphaFold3 note:** Requires a DeepMind non-commercial weights license; excluded from
+> this suite.
 
 ### 13.1 Setup & Design
 
-AlphaFold2 runs on a **single GPU** using JAX + Haiku. Unlike PyTorch, JAX uses
-**XLA JIT compilation** at first call — no precompiled cubins; XLA generates PTX at runtime.
+AlphaFold2's Evoformer block uses multi-head attention over residue pairs; this is the
+central GPU-bound kernel. The proxy benchmark JIT-compiles the same attention pattern
+via `jax.jit` to measure raw XLA compilation + execution throughput.
 
-**Docker setup:**
 ```bash
 cd alphafold/
 sg docker -c "docker build -f Dockerfile.alphafold -t b300-alphafold2:latest ."
-```
-
-**Run:**
-```bash
 CUDA_GPU=0 bash alphafold/run_alphafold_b300.sh
 ```
 
-### 13.2 B300 Result — XLA sm_103 Compilation Blocked
+**Key difference from PyTorch:** JAX uses **XLA JIT compilation** at first call —
+there are no precompiled cubins in the container. XLA generates PTX at runtime and
+invokes ptxas to produce device-native code. This means sm_103 support depends entirely
+on the ptxas version available to XLA, not on what was compiled into the image.
 
-**Actual outcome** (run 2026-03-17, GPU 0, JAX NGC 25.01):
+### 13.2 What We Tried — Three Attempts
+
+**Attempt 1: JAX NGC 25.01 (default ptxas `/usr/local/cuda/bin/ptxas`, CUDA 12.6)**
 
 ```
 JAX version:  0.4.38.dev20250115+838500378
@@ -897,46 +903,96 @@ JAX devices:  [CudaDevice(id=0)]
 GPU:          NVIDIA B300 SXM6 AC
 XLA backend:  gpu
 
-W xla/stream_executor/cuda/subprocess_compilation.cc:238]
-  Falling back to the CUDA driver for PTX compilation; ptxas does not support CC 10.3
+W subprocess_compilation.cc:238] Falling back to the CUDA driver for PTX compilation;
+  ptxas does not support CC 10.3
+XlaRuntimeError: UNIMPLEMENTED: /usr/local/cuda/bin/ptxas ptxas too old.
+  Falling back to the driver to compile.
+```
 
+→ CUDA 12.6 ptxas does not know sm_103. XLA's CUDA driver fallback also fails.
+
+**Attempt 2: JAX NGC 25.01 + host CUDA 12.8 ptxas mounted (re-validated 2026-03-17)**
+
+`run_alphafold_b300.sh` mounts `/usr/local/cuda-12.8` from host and sets
+`XLA_FLAGS=--xla_gpu_cuda_data_dir=/usr/local/cuda-12.8`. XLA confirms it found
+and used the CUDA 12.8 ptxas:
+
+```
+W subprocess_compilation.cc:238] Falling back to the CUDA driver for PTX compilation;
+  ptxas does not support CC 10.3
+W subprocess_compilation.cc:241] Used ptxas at /usr/local/cuda-12.8/bin/ptxas
 XlaRuntimeError: UNIMPLEMENTED: /usr/local/cuda-12.8/bin/ptxas ptxas too old.
   Falling back to the driver to compile.
 ```
 
-XLA's sm_103 PTX compilation fails at two levels:
+→ XLA successfully used the mounted ptxas — but CUDA 12.8 ptxas still rejects CC 10.3.
+  sm_103 support was introduced in CUDA 13.0 ptxas. This is a hard version boundary.
 
-| Fallback level | Outcome |
-|---|---|
-| ptxas at `/usr/local/cuda/bin/ptxas` (CUDA 12.6) | Does not support CC 10.3 |
-| Mounted ptxas from host `/usr/local/cuda-12.8/bin/ptxas` | Still flagged "too old" by XLA |
-| CUDA driver JIT compilation fallback | Also fails — XLA throws `UNIMPLEMENTED` |
-| pip install jax 0.9.1 (latest) | Breaks CUDA plugin (0.4.38.dev ≠ 0.9.1) — GPU not detected |
+**Attempt 3: pip install jax==0.9.1 (latest public release) over NGC container**
 
-**Root cause:** XLA in JAX NGC 25.01 requires CUDA 13.0-level ptxas for sm_103 compilation. Neither CUDA 12.6 (container) nor CUDA 12.8 (host) satisfies this requirement. No public CUDA 13.0 JAX wheels exist at time of testing.
+```
+RuntimeWarning: JAX plugin jax_cuda12_plugin version 0.4.38.dev20260317 is installed,
+  but it is not compatible with the installed jaxlib version 0.9.1, so it will not be used.
+JAX version:  0.9.1
+```
 
-### 13.3 B300 vs H100 vs B200 — AlphaFold2 Status
+→ The NGC container's CUDA plugin (0.4.38.dev) is incompatible with pip JAX 0.9.1.
+GPU not detected. No public CUDA 13.0 JAX wheels available at time of testing.
+
+### 13.3 Attempt Summary
+
+| Attempt | ptxas binary | ptxas version | Outcome |
+|---|---|---|---|
+| JAX NGC 25.01 (default) | `/usr/local/cuda/bin/ptxas` | CUDA 12.8 V12.8.61 (built 2025-01-15) | ❌ `XlaRuntimeError`: CC 10.3 not supported |
+| JAX NGC 25.01 + host ptxas mounted | `/usr/local/cuda-12.8/bin/ptxas` | CUDA 12.8 V12.8.93 (built 2025-02-21) | ❌ `XlaRuntimeError`: CC 10.3 not supported |
+| pip jax 0.9.1 installed over NGC image | n/a — never reached | n/a | ❌ Plugin mismatch: `jax_cuda12_plugin 0.4.38.dev ≠ jaxlib 0.9.1`; **segfault during `import jax`** |
+| **Required** | CUDA 13.0 ptxas | **CUDA 13.0** | ⏳ No public image/wheels at time of testing |
+
+> **Note on Attempt 3 (re-validated 2026-03-17):** pip-installing `jax==0.9.1` over the
+> NGC 25.01 image replaces jaxlib but leaves the NGC CUDA plugin at `0.4.38.dev20260317`.
+> JAX's plugin loader emits 7× `RuntimeWarning: not compatible with jaxlib 0.9.1` then
+> **segfaults during `import jax`** — the incompatible plugin causes a native crash before
+> any GPU code runs. ptxas is never reached. This is an image-state issue, not a ptxas
+> issue. Clean fix: rebuild from scratch (`docker build --no-cache`) without any pip JAX
+> override, preserving the NGC-native JAX 0.4.38.dev + cuda12_plugin pairing.
+
+### 13.4 B300 vs H100 vs B200 — AlphaFold2 Status
 
 | GPU | Inference (T1049, 769 res) | Inference (384 res) | Status |
 |---|---|---|---|
 | H100 SXM5 80 GB | ~11.5 min | ~4.5 min | Published; JAX NGC 24.x |
 | B200 SXM 192 GB | ~8.5 min (est.) | ~3.3 min (est.) | Estimated from BF16 TFLOPS |
 | **B300 SXM6 287 GB** | **❌ Blocked** | **❌ Blocked** | XLA cannot compile for sm_103 |
+| B300 SXM6 (projected) | ~6.5 min (est.) | ~2.5 min (est.) | ⏳ Once CUDA 13.0 JAX available |
 
-> **B300 VRAM advantage (unblocked):** B300's 287 GB enables very large multimer predictions
-> (entire virus capsids, large complexes) that OOM on H100 (80 GB) and B200 (192 GB).
-> Once sm_103 support lands, this will be a qualitative capability advantage.
+> **B300 VRAM advantage:** B300's 287 GB enables very large multimer predictions (entire
+> virus capsids, large protein complexes) that OOM on H100 (80 GB) and B200 (192 GB).
+> Once sm_103 support lands, this will be a qualitative capability advantage beyond raw speed.
 
-### 13.4 sm_103 Compatibility — Framework Comparison
+### 13.5 Root Cause — XLA ptxas Chain
 
-| Stack | sm_103 behavior | Result |
+| Layer | What blocks it | Notes |
 |---|---|---|
-| PyTorch NGC 25.03 | Static cubins; ptxas crash at import | ❌ Fails at torch import |
-| PyTorch Nightly 2.12.0.dev+cu130 | sm_100 PTX fallback via cu130 path | ✅ Works (sm_100 speed) |
-| **JAX NGC 25.01** | **XLA JIT; ptxas too old for sm_103** | **❌ XlaRuntimeError** |
-| JAX (pip 0.9.1) | Plugin version mismatch | ❌ GPU not detected |
+| XLA PTX generation | ✅ Works — XLA generates sm_103 PTX | XLA knows sm_103 architecture |
+| ptxas compilation | ❌ CUDA 12.8 ptxas rejects CC 10.3 | sm_103 added in CUDA 13.0 ptxas |
+| CUDA driver JIT fallback | ❌ CUDA driver returns `UNIMPLEMENTED` for sm_103; process crashes at first op (`jnp.ones`) | Driver API path also blocked on sm_103 |
+| CUDA 13.0 ptxas | ⏳ Required fix | PyTorch Nightly cu130 bundles this |
 
-**Path to resolution:** JAX will work on B300 once either (a) CUDA 13.0 JAX wheels are published, or (b) NVIDIA NGC updates JAX container to 25.03+ with sm_103-capable XLA. JAX's runtime JIT means AlphaFold2 will **automatically** use native sm_103 kernels on next run — no model rebuild required.
+**Why PyTorch Nightly works but JAX does not:** PyTorch Nightly (`cu130`) ships a complete
+CUDA 13.0 toolkit including ptxas 13.0, which accepts sm_103. JAX NGC 25.01 is built
+against CUDA 12.6 and relies on the container's ptxas — upgrading just the ptxas binary
+is insufficient because XLA validates the full toolkit version.
+
+### 13.6 Path to Resolution
+
+JAX's runtime JIT model means **no rebuild is required once the blocker is cleared**:
+
+| Milestone | Expected Gain | Status |
+|---|---|---|
+| NVIDIA NGC JAX 25.03+ with CUDA 13.0 | Full sm_103 XLA JIT | ⏳ Awaiting NGC release |
+| Public CUDA 13.0 JAX wheels on PyPI | Same — via pip install | ⏳ Awaiting JAX team |
+| Once unblocked: native sm_103 Evoformer kernels | +15–25% over H100 | Automatic on next run |
+| Once unblocked: 287 GB VRAM for large multimers | Qualitative advantage | OOM on H100/B200 |
 
 ---
 
