@@ -1,9 +1,10 @@
 #!/bin/bash
 # ============================================================
-# GROMACS 2024 ApoA1 Benchmark — NVIDIA B300 SXM6
+# GROMACS 2024 Water-Box Benchmark — NVIDIA B300 SXM6
 #
 # Self-bootstrapping: builds Docker image if missing, then
-# runs the ApoA1 MD benchmark inside the container.
+# runs gmx benchmark (generates own water-box input) inside
+# the container. No external input files required.
 #
 # Usage:
 #   bash run_gromacs_b300.sh              # GPU 4 (default)
@@ -27,7 +28,7 @@ mkdir -p "${LOG_DIR}"
 
 echo ""
 echo "================================================================"
-echo "  GROMACS 2024 ApoA1 Benchmark — NVIDIA B300 SXM6"
+echo "  GROMACS 2024 Water-Box Benchmark — NVIDIA B300 SXM6"
 echo "  $(date)"
 echo "================================================================"
 echo ""

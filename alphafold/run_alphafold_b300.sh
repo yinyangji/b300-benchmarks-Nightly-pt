@@ -42,10 +42,11 @@ sg docker -c "docker run --rm \
     --ipc=host \
     --ulimit memlock=-1 \
     -e XLA_PYTHON_CLIENT_PREALLOCATE=false \
-    -e XLA_FLAGS='--xla_gpu_cuda_data_dir=/usr/local/cuda' \
+    -e XLA_FLAGS='--xla_gpu_cuda_data_dir=/usr/local/cuda-12.8' \
     -e CUDA_VISIBLE_DEVICES=0 \
     -v ${SCRIPT_DIR}:/workspace \
     -v ${AF_WEIGHTS_DIR}:/data/alphafold_weights:ro \
+    -v /usr/local/cuda-12.8:/usr/local/cuda-12.8:ro \
     -w /workspace \
     ${IMAGE} python3 /workspace/benchmark_alphafold_b300.py" \
     2>&1 | tee "${LOG_DIR}/alphafold_b300_run.log"

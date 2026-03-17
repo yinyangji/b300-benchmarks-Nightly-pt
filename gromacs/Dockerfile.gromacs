@@ -28,11 +28,8 @@ RUN wget -q https://ftp.gromacs.org/gromacs/gromacs-${GMX_VERSION}.tar.gz \
 ENV GMX=/usr/local/gromacs/bin/gmx
 ENV PATH="/usr/local/gromacs/bin:${PATH}"
 
-# Download ApoA1 benchmark input (92,224 atoms — canonical GPU MD benchmark)
-RUN mkdir -p /benchmarks/apoa1 \
-    && wget -q https://ftp.gromacs.org/benchmarks/apoa1.tar.gz \
-         -O /tmp/apoa1.tar.gz \
-    && tar xzf /tmp/apoa1.tar.gz -C /benchmarks/apoa1 --strip-components=1 \
-    && rm /tmp/apoa1.tar.gz
+# Pre-create benchmark working directory
+# (gmx benchmark generates its own water-box input — no external download needed)
+RUN mkdir -p /benchmarks
 
 WORKDIR /benchmarks
