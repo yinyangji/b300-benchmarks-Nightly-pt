@@ -15,7 +15,9 @@ Results, findings, and root-cause analysis are in [`report/b300_benchmark_report
 b300-benchmarks/
 ├── Dockerfile.ngc                    # NGC 25.03 image with all Pangu deps
 ├── benchmarks/
-│   └── gpu_benchmark_dsai.py         # GPU microbenchmark (GEMM/Attn/Conv/BW/NCCL)
+│   ├── gpu_benchmark_dsai.py         # GPU microbenchmark (GEMM/Attn/Conv/BW/NCCL)
+│   ├── nvlink_stress_b300.py         # NVLink 5 stress — all collectives (torchrun)
+│   └── run_nvlink_stress.sh          # Runner — auto-selects nightly/conda env
 ├── training/
 │   ├── faster_train.py               # Pangu S2S trainer (DDP, AMP, compile)
 │   ├── config/
@@ -343,6 +345,29 @@ CUDA_GPU=4 bash gromacs/run_gromacs_b300.sh
 | H100 SXM5 | ~450 ns/day | NVIDIA SC23 benchmark |
 | B200 SXM (est.) | ~585 ns/day | Estimated from TFLOPS ratio |
 | B300 SXM6 | TBD (est. 400–480) | sm_100 fallback; run to measure |
+
+---
+
+## NVLink 5 Stress Benchmark (All Collectives, 4 GPU)
+
+**Script:** `benchmarks/nvlink_stress_b300.py`
+Pushes NVLink 5 to maximum utilization using all NCCL collectives (All-Reduce, All-to-All, Reduce-Scatter, All-Gather, Broadcast, P2P Bidirectional) swept from 1 MB → 4 GB. Also includes a 10-second sustained stress run.
+
+```bash
+# GPUs 4,5,6,7 (default) — auto-selects nightly env (NCCL 2.29.3)
+bash benchmarks/run_nvlink_stress.sh 2>&1 | tee results/nvlink_stress_b300.log
+
+# Different GPUs
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash benchmarks/run_nvlink_stress.sh
+```
+
+### Expected peak (4× B300, NVLink 5 theoretical = 900 GB/s unidirectional)
+
+| Collective | Expected peak | NVLink 5 % |
+|---|---|---|
+| All-Reduce (ring) | ~654 GB/s (measured §4) | 72.7% |
+| All-to-All | TBD — highest expected | TBD |
+| P2P Bidirectional | TBD | TBD |
 
 ---
 

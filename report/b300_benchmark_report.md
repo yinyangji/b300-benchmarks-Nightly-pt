@@ -24,6 +24,7 @@
 2. [Environment Setup](#2-environment-setup)
 3. [GPU Microbenchmarks](#3-gpu-microbenchmarks)
 4. [NCCL / NVLink Bandwidth Tests](#4-nccl--nvlink-bandwidth-tests)
+4b. [NVLink 5 Stress Benchmark — All Collectives (4 GPU)](#4b-nvlink-5-stress-benchmark--all-collectives-4-gpu)
 5. [Pangu S2S Training Benchmarks — Conda Baseline](#5-pangu-s2s-training-benchmarks--conda-baseline)
 6. [Pangu S2S Training Benchmarks — NGC 25.03 Container](#6-pangu-s2s-training-benchmarks--ngc-2503-container)
 7. [Conda vs NGC Comparison](#7-conda-vs-ngc-comparison)
@@ -252,6 +253,72 @@ Collective: all_reduce_perf
 | **Average** | **393.9 GB/s** | |
 
 **Finding:** Ring all-reduce peaks at **654 GB/s** at 1 GB message size. This is **72.7% of NVLink 5 theoretical bandwidth** (~900 GB/s per direction per GPU), which is healthy for ring all-reduce topology. NVLink 5 is functioning correctly; the topology shows NV18 connections (18 NVLink lanes per GPU pair).
+
+---
+
+## 4b. NVLink 5 Stress Benchmark — All Collectives (4 GPU)
+
+**Script:** `benchmarks/nvlink_stress_b300.py` + `benchmarks/run_nvlink_stress.sh`
+**Goal:** Push NVLink 5 to maximum utilization across all collective operations simultaneously, using every NCCL collective type and bidirectional P2P.
+
+### 4b.1 Design
+
+Section §4 only measured ring all-reduce via `nccl-tests`. This stress benchmark adds:
+
+| Collective | NVLink traffic pattern | Bus BW formula |
+|---|---|---|
+| **All-Reduce** | Ring: each GPU relays data through all others | `bytes × 2(n-1)/n / t` |
+| **All-to-All** | Every GPU sends a unique shard to every other GPU | `bytes × (n-1)/n / t` |
+| **Reduce-Scatter** | Partial reduction dispersed across GPUs | `bytes × (n-1)/n / t` |
+| **All-Gather** | Each GPU broadcasts its shard to all others | `bytes × (n-1)/n / t` |
+| **Broadcast** | Root (rank 0) sends to all | `bytes / t` |
+| **P2P Bidirectional** | All 4 links active simultaneously (ring, send+recv) | `bytes × 2 / t` |
+| **Sustained Stress** | All-Reduce + All-to-All alternating for 10 s | avg bus BW |
+
+Message sizes swept: 1 MB → 4 GB. All operations use **BF16** (primary training dtype).
+
+**NCCL tuning applied:**
+```bash
+NCCL_BUFFSIZE=16777216    # 16 MB ring buffer — fills NVLink pipe
+NCCL_MAX_NCHANNELS=32     # saturate all 18 NVLink lanes
+NCCL_ALGO=Ring            # ring optimal for 4-GPU full-mesh NVLink
+NCCL_IB_DISABLE=1         # force NVLink, disable InfiniBand path
+```
+
+### 4b.2 Run
+
+```bash
+# GPUs 4,5,6,7 (default)
+bash benchmarks/run_nvlink_stress.sh 2>&1 | tee results/nvlink_stress_b300.log
+
+# Different GPUs
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash benchmarks/run_nvlink_stress.sh
+```
+
+Uses `pt-nightly-cu130` env (NCCL 2.29.3) automatically; falls back to `s2s` conda (NCCL 2.28.9).
+
+### 4b.3 Results (4× B300 SXM6, BF16)
+
+> *Results pending — run `run_nvlink_stress.sh` on GPUs 4–7 to populate.*
+
+| Collective | Peak Bus BW (GB/s) | % NVLink 5 Theoretical |
+|---|---|---|
+| All-Reduce | TBD | TBD |
+| All-to-All | TBD | TBD |
+| Reduce-Scatter | TBD | TBD |
+| All-Gather | TBD | TBD |
+| Broadcast | TBD | TBD |
+| P2P Bidirectional | TBD | TBD |
+| Sustained Stress (10 s) | TBD | TBD |
+| **nccl-tests all_reduce (§4, reference)** | **654 GB/s** | **72.7%** |
+| **NVLink 5 theoretical (unidirectional/GPU)** | **900 GB/s** | **100%** |
+
+### 4b.4 Expected Findings
+
+- **All-to-All** typically approaches the highest NVLink utilization (exercises all GPU pairs simultaneously, not just the ring chain)
+- **P2P Bidirectional** measures raw link capacity without NCCL collective overhead
+- **Sustained stress** reveals throttling behavior under prolonged load (thermal, power)
+- All operations expected to benefit from native sm_103 cubins only indirectly (NCCL kernel overhead is small relative to transfer time at large message sizes)
 
 ---
 
