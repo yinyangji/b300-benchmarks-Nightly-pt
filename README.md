@@ -326,3 +326,9 @@ See [`report/b300_benchmark_report.md`](report/b300_benchmark_report.md) §8–1
 - Pangu-Weather S2S: [NVIDIA PhysicsNeMo](https://docs.nvidia.com/physicsnemo/25.11/physicsnemo/examples/weather/pangu_weather/README.html)
 - NCCL Tests: https://github.com/NVIDIA/nccl-tests
 - NGC PyTorch 25.03: `nvcr.io/nvidia/pytorch:25.03-py3`
+- **PyTorch Nightly Builds** — updated every night from the `main` branch:
+  - Install index: https://download.pytorch.org/whl/nightly/cu130
+  - Build status & changelog: https://github.com/pytorch/pytorch/blob/main/CHANGELOG.md
+  - Nightly release tracker (check which `sm_*` archs are added): https://github.com/pytorch/pytorch/issues
+  - Used in this report: `torch==2.12.0.dev20260316+cu130` (captured 2026-03-17)
+  - Lock file: [`requirements-nightly-cu130.txt`](requirements-nightly-cu130.txt)
