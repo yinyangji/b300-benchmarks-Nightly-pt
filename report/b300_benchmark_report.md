@@ -836,11 +836,11 @@ NGC_GPUS=0,1,2,3 bash training/scripts/b300_training_ngc.sh \
 - **NGC PyTorch 25.03:** `nvcr.io/nvidia/pytorch:25.03-py3`
 - **MLCommons Inference (loadgen):** https://github.com/mlcommons/inference
 - **PyTorch Nightly Builds** — updated every night from the `main` branch:
-  - Install index (cu130): https://download.pytorch.org/whl/nightly/cu130
   - Release notes (stable + nightly): https://github.com/pytorch/pytorch/releases
   - Track sm_103 arch-list additions: https://github.com/pytorch/pytorch/issues
-  - Build used in this report: `torch==2.12.0.dev20260316+cu130` (captured 2026-03-17)
+  - Build used in this report: `torch==2.12.0.dev20260316+cu130` (captured 2026-03-16)
   - Exact environment lock: [`requirements-nightly-cu130.txt`](../requirements-nightly-cu130.txt)
+  - Install index (cu130): https://download.pytorch.org/whl/nightly/cu130
 
 ---
 
