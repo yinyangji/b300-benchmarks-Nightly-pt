@@ -44,6 +44,7 @@
 13. [AlphaFold2 Inference Benchmark (JAX)](#13-alphafold2-inference-benchmark-jax)
 14. [GROMACS 2025.1 MD Simulation — Water Box](#14-gromacs-20251-md-simulation--water-box)
 15. [Verdict & Recommendations](#15-verdict--recommendations)
+- [Glossary](#glossary)
 
 ---
 
@@ -1323,6 +1324,26 @@ NGC_GPUS=0,1,2,3 bash training/scripts/b300_training_ngc.sh \
 ```
 
 ---
+
+---
+
+## Glossary
+
+**Cubin** — A compiled CUDA binary: native machine code for a specific GPU architecture (SM version). When you compile CUDA code with `nvcc`, it can produce two output types:
+
+- **PTX** (Parallel Thread Execution) — GPU assembly / intermediate representation. Architecture-neutral; JIT-compiled at runtime by the driver. Portable across SM generations but slower on first run due to JIT compilation overhead.
+- **Cubin** — Fully compiled native binary targeting a specific SM (e.g., `sm_90` for H100, `sm_100` for B200, `sm_103` for B300). Optimal performance; no JIT overhead.
+
+**What happens at runtime on B300 (sm_103):**
+
+| Binary present | Runtime behavior |
+|---|---|
+| sm_103 cubin | Runs natively — best performance, full Blackwell Tensor Core scheduling |
+| sm_100 cubin | Runs via Blackwell family backward compat — functional, slightly suboptimal |
+| PTX only | Driver JIT-compiles at first launch — works if driver supports sm_103; slow cold start |
+| sm_89 or older cubin | Will not run on sm_103; driver cannot translate forward |
+
+**Why this matters for B300:** PyTorch Nightly cu130 ships `sm_100` cubins (plus PTX fallback), which is why it runs on B300 today. Once NVIDIA adds `sm_103` to the arch list, it will ship native `sm_103` cubins — unlocking full Blackwell Tensor Core scheduling and the projected +20–35% GEMM/Attention gain. See §10 for detailed root cause analysis.
 
 ---
 
