@@ -1,10 +1,5 @@
 FROM nvcr.io/nvidia/jax:25.01-py3
 
-# Upgrade JAX/XLA to latest CUDA-12 wheel (sm_103 fallback via driver JIT in JAX >= 0.4.35)
-RUN pip install --upgrade --no-cache-dir "jax[cuda12_pip]" \
-    -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html \
-    || pip install --upgrade --no-cache-dir jax jaxlib  # fallback to CPU jaxlib if CUDA wheel fails
-
 # AlphaFold2 Python dependencies
 RUN pip install --no-cache-dir \
     dm-haiku==0.0.12 \

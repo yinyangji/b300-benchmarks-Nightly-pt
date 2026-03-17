@@ -139,7 +139,7 @@ sg docker -c "docker pull nvcr.io/nvidia/pytorch:25.03-py3"
 | NCCL | 2.25.1 |
 | Optimizer | PyTorch native Adam (no apex in container) |
 
-**Custom image built from `Dockerfile.ngc`** to pre-install all Pangu dependencies (avoids ~30s pip install on every launch):
+**Custom image built from `training/Dockerfile.ngc`** to pre-install all Pangu dependencies (avoids ~30s pip install on every launch):
 
 ```dockerfile
 FROM nvcr.io/nvidia/pytorch:25.03-py3
@@ -154,7 +154,7 @@ WORKDIR /workspace
 **Build:**
 ```bash
 cd /home/rdesouz4/scratchrdesouz4/b300/pangus2s
-sg docker -c "docker build -f Dockerfile.ngc -t pangu-s2s-ngc:latest ."
+sg docker -c "docker build -f training/Dockerfile.ngc -t pangu-s2s-ngc:latest ."
 ```
 
 ---
@@ -866,20 +866,15 @@ by using `buf.ctypes.data` for the raw C pointer passed to `QuerySampleResponse`
 **Workload:** Protein structure prediction — AlphaFold2 (Google DeepMind, Apache 2.0)
 **Framework:** JAX + XLA on NVIDIA NGC JAX container (`nvcr.io/nvidia/jax:25.01-py3`)
 **Scripts:** `alphafold/Dockerfile.alphafold`, `alphafold/run_alphafold_b300.sh`
+**Status: ❌ Blocked by sm_103 — same root cause as §8.3**
 
-> **Note on AlphaFold3:** AlphaFold3 (released May 2024) requires a model weights
-> application through DeepMind's non-commercial license before download and is therefore
-> excluded from this automated benchmark suite. This section covers AlphaFold2, whose
-> weights are freely downloadable from the DeepMind GCS bucket (~3.5 GB).
+> **Note on AlphaFold3:** AlphaFold3 requires a DeepMind non-commercial weights license
+> and is excluded from this suite. This section covers AlphaFold2.
 
 ### 13.1 Setup & Design
 
-AlphaFold2 runs on a **single GPU** using JAX + Haiku. The dominant GPU workload is the
-Evoformer attention stack (48 blocks) and structure module. Unlike PyTorch, JAX uses
-**XLA JIT compilation** at first call — there are no precompiled cubins; XLA generates
-PTX for the target GPU at runtime. On B300 (sm_103), XLA falls back to sm_100 PTX
-(the same root cause as §8.3 Cause 1), but the fallback is generated at runtime rather
-than shipped as a static binary.
+AlphaFold2 runs on a **single GPU** using JAX + Haiku. Unlike PyTorch, JAX uses
+**XLA JIT compilation** at first call — no precompiled cubins; XLA generates PTX at runtime.
 
 **Docker setup:**
 ```bash
@@ -887,133 +882,122 @@ cd alphafold/
 sg docker -c "docker build -f Dockerfile.alphafold -t b300-alphafold2:latest ."
 ```
 
-**Run (single GPU, Evoformer proxy benchmark — no weights required):**
+**Run:**
 ```bash
-CUDA_GPU=4 bash alphafold/run_alphafold_b300.sh
+CUDA_GPU=0 bash alphafold/run_alphafold_b300.sh
 ```
 
-**Run (full AF2 prediction — requires weights):**
-```bash
-AF_WEIGHTS_DIR=/path/to/alphafold_weights \
-CUDA_GPU=4 bash alphafold/run_alphafold_b300.sh
+### 13.2 B300 Result — XLA sm_103 Compilation Blocked
+
+**Actual outcome** (run 2026-03-17, GPU 0, JAX NGC 25.01):
+
+```
+JAX version:  0.4.38.dev20250115+838500378
+JAX devices:  [CudaDevice(id=0)]
+GPU:          NVIDIA B300 SXM6 AC
+XLA backend:  gpu
+
+W xla/stream_executor/cuda/subprocess_compilation.cc:238]
+  Falling back to the CUDA driver for PTX compilation; ptxas does not support CC 10.3
+
+XlaRuntimeError: UNIMPLEMENTED: /usr/local/cuda-12.8/bin/ptxas ptxas too old.
+  Falling back to the driver to compile.
 ```
 
-**Key environment variables:**
-- `XLA_PYTHON_CLIENT_PREALLOCATE=false` — prevents JAX from claiming all 287 GB B300 VRAM on init; AF2 uses 16–32 GB
-- `XLA_FLAGS=--xla_gpu_cuda_data_dir=/usr/local/cuda`
+XLA's sm_103 PTX compilation fails at two levels:
 
-### 13.2 B300 vs H100 vs B200 — AlphaFold2 Inference
+| Fallback level | Outcome |
+|---|---|
+| ptxas at `/usr/local/cuda/bin/ptxas` (CUDA 12.6) | Does not support CC 10.3 |
+| Mounted ptxas from host `/usr/local/cuda-12.8/bin/ptxas` | Still flagged "too old" by XLA |
+| CUDA driver JIT compilation fallback | Also fails — XLA throws `UNIMPLEMENTED` |
+| pip install jax 0.9.1 (latest) | Breaks CUDA plugin (0.4.38.dev ≠ 0.9.1) — GPU not detected |
 
-Target: T1049 monomer (769 residues, single model, no templates, no relaxation, FP16 MSA)
+**Root cause:** XLA in JAX NGC 25.01 requires CUDA 13.0-level ptxas for sm_103 compilation. Neither CUDA 12.6 (container) nor CUDA 12.8 (host) satisfies this requirement. No public CUDA 13.0 JAX wheels exist at time of testing.
 
-| GPU | Inference time — T1049 (769 res) | Inference time — 384 res | Notes |
+### 13.3 B300 vs H100 vs B200 — AlphaFold2 Status
+
+| GPU | Inference (T1049, 769 res) | Inference (384 res) | Status |
 |---|---|---|---|
 | H100 SXM5 80 GB | ~11.5 min | ~4.5 min | Published; JAX NGC 24.x |
-| B200 SXM 192 GB | ~8.5 min (est.) | ~3.3 min (est.) | Estimated from BF16 TFLOPS ratio (~1.35×); not independently published |
-| **B300 SXM6 287 GB** | **TBD** | **TBD** | Run `run_alphafold_b300.sh` — results pending |
+| B200 SXM 192 GB | ~8.5 min (est.) | ~3.3 min (est.) | Estimated from BF16 TFLOPS |
+| **B300 SXM6 287 GB** | **❌ Blocked** | **❌ Blocked** | XLA cannot compile for sm_103 |
 
-> **B300 VRAM advantage:** B300's 287 GB enables very large multimer predictions
-> (entire virus capsids, large protein complexes) that OOM on H100 (80 GB) and
-> even B200 (192 GB). This is a qualitative capability difference beyond raw speed.
+> **B300 VRAM advantage (unblocked):** B300's 287 GB enables very large multimer predictions
+> (entire virus capsids, large complexes) that OOM on H100 (80 GB) and B200 (192 GB).
+> Once sm_103 support lands, this will be a qualitative capability advantage.
 
-### 13.3 Expected B300 Performance
+### 13.4 sm_103 Compatibility — Framework Comparison
 
-Based on the pattern seen across all benchmarks in this report:
-- **Evoformer attention** (dominant kernel): same 20–35% below peak as §3.3 until sm_103 XLA kernels land
-- **XLA JIT advantage:** unlike PyTorch static cubins, JAX re-JITs at runtime — once
-  CUDA's ptxas supports sm_103 natively, AlphaFold2 will automatically use native kernels
-  on the next run without any software update required
-- Expected measured time on B300: **~12–14 min (T1049)** with current sm_100 fallback
+| Stack | sm_103 behavior | Result |
+|---|---|---|
+| PyTorch NGC 25.03 | Static cubins; ptxas crash at import | ❌ Fails at torch import |
+| PyTorch Nightly 2.12.0.dev+cu130 | sm_100 PTX fallback via cu130 path | ✅ Works (sm_100 speed) |
+| **JAX NGC 25.01** | **XLA JIT; ptxas too old for sm_103** | **❌ XlaRuntimeError** |
+| JAX (pip 0.9.1) | Plugin version mismatch | ❌ GPU not detected |
 
-### 13.4 sm_103 Context for JAX/XLA
-
-| Stack | sm_103 behavior |
-|---|---|
-| PyTorch (stable/NGC) | Static cubins; sm_100 fallback baked in at build time |
-| PyTorch Nightly | Same static cubin fallback; compile path works but uses sm_100 |
-| **JAX/XLA** | **JIT at runtime**; once ptxas supports sm_103, automatically targets it — no rebuild needed |
-
-JAX's runtime JIT means AlphaFold2 on B300 will be **one of the first workloads to benefit**
-when native sm_103 PTX support lands in the CUDA toolkit.
+**Path to resolution:** JAX will work on B300 once either (a) CUDA 13.0 JAX wheels are published, or (b) NVIDIA NGC updates JAX container to 25.03+ with sm_103-capable XLA. JAX's runtime JIT means AlphaFold2 will **automatically** use native sm_103 kernels on next run — no model rebuild required.
 
 ---
 
-## 14. GROMACS 2024 MD Simulation — ApoA1
+## 14. GROMACS 2024 MD Simulation — Water Box
 
-**Workload:** Molecular dynamics — ApoA1 lipid bilayer (92,224 atoms, NPT ensemble)
-**Software:** GROMACS 2024.1 from NVIDIA NGC (`nvcr.io/nvidia/gromacs:2024.1`)
-**Scripts:** `gromacs/Dockerfile.gromacs`, `gromacs/run_gromacs_b300.sh`
-**Standard benchmark:** ApoA1 is the canonical cross-GPU MD benchmark used by NVIDIA,
-ENCCS, and HPC centers worldwide.
+**Workload:** Molecular dynamics — SPC water box, 9×9×9 nm, ~23,905 molecules (~71k atoms)
+**Software:** GROMACS 2024.3 built from source in CUDA 12.8 container
+**Scripts:** `gromacs/Dockerfile.gromacs`, `gromacs/gen_waterbox.sh`, `gromacs/run_gromacs_b300.sh`
+**Status: ❌ Blocked — GROMACS segfaults on first GPU kernel call on sm_103**
+
+> Note: NGC does not publish a `nvcr.io/nvidia/gromacs` container. GROMACS 2024.3 was
+> compiled from source using `nvcr.io/nvidia/cuda:12.8.0-devel-ubuntu22.04` as base.
+> The benchmark uses a self-generated SPC water-box TPR (no external downloads).
 
 ### 14.1 Setup & Design
 
-GROMACS is run in **single-GPU mode** with full GPU offload:
-
-```bash
-gmx mdrun \
-    -ntmpi 1 -ntomp 16 \
-    -nb gpu -pme gpu -bonded gpu \
-    -gpu_id 0 \
-    -nsteps 50000 -resetstep 10000 \
-    -noconfout -dlb no
-```
-
-`-resetstep 10000` discards the first 10,000 steps (equilibration) from timing,
-reporting steady-state **ns/day** — the standard metric for GPU MD comparison.
-
-**Docker setup:**
 ```bash
 cd gromacs/
 sg docker -c "docker build -f Dockerfile.gromacs -t b300-gromacs:latest ."
-```
-
-**Run:**
-```bash
 CUDA_GPU=4 bash gromacs/run_gromacs_b300.sh
 ```
 
-**sm_103 context:** The NGC GROMACS 2024.1 container is compiled against CUDA 12.x
-with sm_90 and sm_100 targets. On B300 (sm_103), GROMACS falls back to sm_100 kernels —
-same root cause as §8.3 Cause 1. The B300 result (TBD) is expected to be comparable
-to or slightly below H100 until a native sm_103 GROMACS build is available.
+GROMACS compiled with CUDA targets: `sm_80;sm_86;sm_90;sm_100`
 
-### 14.2 B300 vs H100 vs B200 — ApoA1 Performance
+Benchmark: `gmx mdrun -ntmpi 1 -ntomp 16 -nb gpu -pme gpu -nsteps 50000 -resetstep 10000`
 
-| GPU | ApoA1 ns/day (single GPU) | vs H100 | Notes |
+### 14.2 B300 Result — Segfault on GPU Kernel Launch
+
+**Actual outcome** (run 2026-03-17, GPU 4, GROMACS 2024.3):
+
+```
+#0: NVIDIA NVIDIA B300 SXM6 AC, compute cap.: 10.3, ECC: yes, stat: compatible
+...
+starting mdrun 'Water benchmark (9x9x9 nm, SPC, gromos43a1) in water'
+50000 steps,    100.0 ps.
+
+Segmentation fault (core dumped)
+```
+
+GROMACS detects the B300 as `compatible` (sm_103 falls through to sm_100 PTX JIT), but the first CUDA kernel launch triggers a segfault. Unlike PyTorch Nightly's graceful sm_100 PTX fallback, GROMACS's CUDA kernel path crashes on sm_103.
+
+| GPU | ApoA1 ns/day | Water-box ns/day | Status |
 |---|---|---|---|
-| H100 SXM5 80 GB | ~450 ns/day | baseline | GROMACS 2024.1; NVIDIA SC23 benchmarks |
-| B200 SXM 192 GB | ~585 ns/day (est.) | ~+30% | Estimated from MD TFLOPS ratio; not independently published |
-| **B300 SXM6 287 GB** | **TBD** | **TBD** | Run `run_gromacs_b300.sh` — results pending |
+| H100 SXM5 80 GB | ~450 ns/day | ~600 ns/day (est.) | Published baselines |
+| B200 SXM 192 GB | ~585 ns/day (est.) | ~780 ns/day (est.) | Estimated from MD TFLOPS |
+| **B300 SXM6 287 GB** | **❌ Segfault** | **❌ Segfault** | First GPU kernel crashes |
 
-> **B300 prediction:** Given the sm_100 cubin fallback (20–35% throughput reduction
-> observed in GEMM benchmarks, §3.1), B300 is expected to measure **400–480 ns/day** —
-> comparable to H100. The 287 GB VRAM advantage is irrelevant for ApoA1 (92K atoms)
-> but becomes decisive for multi-million-atom systems (full virus capsids, lipid bilayer
-> assemblies) that cannot fit on H100 (80 GB) or B200 (192 GB).
+### 14.3 Root Cause
 
-### 14.3 Interpreting Results
+GROMACS 2024.3 compiled with CUDA 12.8 (`--generate-code=arch=compute_100,code=sm_100`). The sm_100 PTX is JIT-compiled for sm_103 by the CUDA driver, but produces kernel code incompatible with B300's hardware. GROMACS has no explicit fallback error handling — it segfaults rather than returning an error.
 
-The primary metric from `gmx mdrun` is:
-```
-Performance:     XXX ns/day     YY hours/ns
-```
-
-| ns/day | Practical meaning |
-|---|---|
-| 450 (H100 baseline) | 1 µs simulation completes in ~2.2 days |
-| 585 (B200 est.) | 1 µs simulation completes in ~1.7 days |
-| TBD (B300) | To be measured |
-
-For large systems where B300's 287 GB VRAM enables runs that H100/B200 cannot fit:
-B300 is qualitatively superior regardless of ns/day throughput.
+**Comparison with PyTorch Nightly:** PyTorch Nightly (cu130) successfully uses sm_100 PTX fallback. The difference likely lies in how CUDA kernels use hardware features: PyTorch's kernels are written defensively, while GROMACS's PME/NB GPU kernels rely on specific memory access patterns or warp-level operations that differ on sm_103.
 
 ### 14.4 What to Expect Next
 
 | Milestone | Expected Gain | Status |
 |---|---|---|
-| GROMACS native sm_103 build | +20–35% ns/day on ApoA1 | ⏳ NGC GROMACS image when available |
-| AF2 XLA JIT sm_103 kernels | +15–25% inference time | ⏳ Automatic once ptxas supports sm_103 |
+| GROMACS recompile with CUDA 13.0 + sm_103 target | Full GPU performance | ⏳ Requires CUDA 13.0 GROMACS build |
+| Alternative: Run on CPU (128-core Intel Xeon 6767P) | ~50–80 ns/day (CPU-only) | Available now — slow |
+| Native sm_103 GROMACS kernels | +20–35% over H100 | ⏳ When CUDA 13.0 GROMACS lands |
+| AF2 XLA JIT sm_103 kernels | +15–25% inference speedup | ⏳ Automatic once CUDA 13.0 JAX available |
 
 ---
 
@@ -1046,7 +1030,7 @@ B300 is qualitatively superior regardless of ns/day throughput.
 | Improvement | Expected Gain | Status |
 |---|---|---|
 | PyTorch with native sm_103 cubins | +20–35% GEMM/Attention | Not yet in `dev20260316`; watch for sm_103 in arch_list |
-| apex FusedAdam in NGC / nightly container | +5–15% optimizer step | Add `apex` to `Dockerfile.ngc` |
+| apex FusedAdam in NGC / nightly container | +5–15% optimizer step | Add `apex` to `training/Dockerfile.ngc` |
 | Full FP8 (`te.Linear` in model) | +30–50% vs BF16 | Requires model architecture surgery |
 | torch.compile on B300 | ✅ Working in nightly (+18–37%) | NGC still broken; use nightly |
 | torchao FP4 on B300 | 14 PFLOPS potential | Install torchao nightly alongside PyTorch nightly |
@@ -1065,7 +1049,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash training/scripts/b300_training_nightly.sh \
 **Option B — NGC Container (stable fallback):**
 ```bash
 # Build image once (auto-triggered by script if missing)
-sg docker -c "docker build -f Dockerfile.ngc -t pangu-s2s-ngc:latest ."
+sg docker -c "docker build -f training/Dockerfile.ngc -t pangu-s2s-ngc:latest ."
 
 # Run full benchmark suite
 NGC_GPUS=0,1,2,3 bash training/scripts/b300_training_ngc.sh \

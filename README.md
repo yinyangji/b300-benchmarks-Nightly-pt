@@ -13,12 +13,12 @@ Results, findings, and root-cause analysis are in [`report/b300_benchmark_report
 
 ```
 b300-benchmarks/
-├── Dockerfile.ngc                    # NGC 25.03 image with all Pangu deps
 ├── benchmarks/
 │   ├── gpu_benchmark_dsai.py         # GPU microbenchmark (GEMM/Attn/Conv/BW/NCCL)
 │   ├── nvlink_stress_b300.py         # NVLink 5 stress — all collectives (torchrun)
 │   └── run_nvlink_stress.sh          # Runner — auto-selects nightly/conda env
 ├── training/
+│   ├── Dockerfile.ngc                # NGC 25.03 image with all Pangu deps
 │   ├── faster_train.py               # Pangu S2S trainer (DDP, AMP, compile)
 │   ├── config/
 │   │   └── exp1_dsai.yaml            # Model & training hyperparameters
@@ -158,7 +158,7 @@ waiting months for the next stable release.
 docker pull nvcr.io/nvidia/pytorch:25.03-py3
 
 # Build custom image with Pangu deps pre-installed
-docker build -f Dockerfile.ngc -t pangu-s2s-ngc:latest .
+docker build -f training/Dockerfile.ngc -t pangu-s2s-ngc:latest .
 ```
 
 > **Why NGC 25.03?**
@@ -401,7 +401,7 @@ Expected peak bus bandwidth on B300: **~654 GB/s** at 1 GB (72.7% of NVLink 5).
 |---|---|---|
 | sm_103 absent from PyTorch cubin list | GEMM/Attn 20–35% below peak | Not in nightly dev20260316 either; watch for sm_103 in arch_list |
 | Triton/ptxas rejects sm_103 (CUDA 12.8 & 13.0) | torch.compile unusable on B300 | Requires upstream Triton patch + ptxas sm_103 support |
-| apex FusedAdam not in NGC/nightly container | ~5–15% optimizer overhead | Add to Dockerfile.ngc |
+| apex FusedAdam not in NGC/nightly container | ~5–15% optimizer overhead | Add to training/Dockerfile.ngc |
 | FP8 only partial (no te.Linear in model) | No FP8 speedup | Requires model architecture surgery |
 | FP4 (torchao) API available but no hw acceleration | 14 PFLOPS unreachable without sm_103 cubins | Will unlock once sm_103 lands in nightly |
 

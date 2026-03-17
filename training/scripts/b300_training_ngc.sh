@@ -17,7 +17,7 @@
 #
 # To rebuild the Docker image with updated deps:
 #   cd /home/rdesouz4/scratchrdesouz4/b300/pangus2s
-#   sg docker -c "docker build -f Dockerfile.ngc -t pangu-s2s-ngc:latest ."
+#   sg docker -c "docker build -f training/Dockerfile.ngc -t pangu-s2s-ngc:latest ."
 #
 # SLURM usage:
 #   sbatch b300_training_ngc.sh
@@ -58,8 +58,8 @@ if [ -z "${RUNNING_IN_DOCKER:-}" ]; then
 
     # Build image if it doesn't exist
     if ! sg docker -c "docker image inspect ${IMAGE}" &>/dev/null 2>&1; then
-        echo "==> Image ${IMAGE} not found. Building from Dockerfile.ngc ..."
-        sg docker -c "docker build -f ${REPO_ROOT}/Dockerfile.ngc -t ${IMAGE} ${REPO_ROOT}"
+        echo "==> Image ${IMAGE} not found. Building from training/Dockerfile.ngc ..."
+        sg docker -c "docker build -f ${REPO_ROOT}/training/Dockerfile.ngc -t ${IMAGE} ${REPO_ROOT}"
         echo "==> Build complete."
         echo ""
     fi
