@@ -26,14 +26,15 @@ echo "  System: ~71k atoms (SPC water, 9x9x9 nm, gromos43a1 FF)"
 sep
 echo ""
 
-# ── mdrun — full GPU offload ──────────────────────────────────────────────────
-echo ">>> gmx mdrun (${NSTEPS} steps, nb+pme+bonded on GPU)..."
+# ── mdrun — nb on GPU, PME on CPU (pme gpu segfaults on sm_103 with CUDA 12.8 runtime)
+# PME-GPU requires CUDA 13.0 runtime for sm_103; use CPU PME as workaround.
+echo ">>> gmx mdrun (${NSTEPS} steps, nb on GPU / PME on CPU)..."
 ${GMX} mdrun \
     -s "${TPR}" \
     -ntmpi 1 \
     -ntomp "${OMP_THREADS}" \
     -nb gpu \
-    -pme gpu \
+    -pme cpu \
     -nsteps "${NSTEPS}" \
     -resetstep "${RESETSTEP}" \
     -noconfout \
@@ -71,7 +72,7 @@ data = {
     'resetstep': ${RESETSTEP},
     'system': 'SPC water box 9x9x9 nm, ~71k atoms (gromos43a1)',
     'gpu': '$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)',
-    'offload': 'nb+pme+bonded GPU'
+    'offload': 'nb GPU / pme CPU (pme-gpu blocked: sm_103 + CUDA 12.8 runtime)'
 }
 with open('${OUT_DIR}/gromacs_b300_result.json', 'w') as f:
     json.dump(data, f, indent=2)

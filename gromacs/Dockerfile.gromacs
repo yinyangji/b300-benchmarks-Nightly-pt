@@ -1,13 +1,29 @@
 FROM nvcr.io/nvidia/cuda:12.8.0-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Install cmake 3.28+ (GROMACS 2025.1 requires >=3.28; Ubuntu 22.04 ships 3.22)
 RUN apt-get update && apt-get install -y \
-    cmake build-essential wget python3 python3-pip \
+    build-essential wget python3 python3-pip curl gpg \
     libfftw3-dev libopenmpi-dev openmpi-bin \
+    && curl -fsSL https://apt.kitware.com/keys/kitware-archive-latest.asc \
+       | gpg --dearmor -o /usr/share/keyrings/kitware-archive-keyring.gpg \
+    && echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' \
+       > /etc/apt/sources.list.d/kitware.list \
+    && apt-get update && apt-get install -y cmake \
     && rm -rf /var/lib/apt/lists/*
 
-# Build GROMACS 2024.3 with CUDA GPU offload (nb + pme + bonded)
-ARG GMX_VERSION=2024.3
+# Build GROMACS 2025.1 with CUDA GPU offload
+#
+# NOTE 1: sm_103 (B300 SXM6 AC) requires CUDA 13.0 nvcc — not supported in CUDA 12.8.
+#   nvcc 12.8 rejects sm_103 in GMXCUDA_TARGET_SM at cmake time.
+#   GROMACS 2025.1 compiled for sm_100 only; B300 executes sm_100 cubins via
+#   backward compat within the Blackwell (sm_10x) family.
+#
+# NOTE 2: CUDA 12.8 *runtime* (libcudart.so.12.8) is the deep blocker for PME-GPU.
+#   Even sm_100 cubins cause libcudart.so.12.8 to segfault on sm_103 when PME GPU
+#   kernels are launched. Workaround: -nb gpu / -pme cpu until CUDA 13.0 image lands.
+#   Re-compile with nvcr.io/nvidia/cuda:13.0-devel once available.
+ARG GMX_VERSION=2025.1
 RUN wget -q https://ftp.gromacs.org/gromacs/gromacs-${GMX_VERSION}.tar.gz \
     && tar xzf gromacs-${GMX_VERSION}.tar.gz \
     && mkdir gromacs-${GMX_VERSION}/build \

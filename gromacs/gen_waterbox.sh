@@ -40,6 +40,9 @@ tcoupl          = V-rescale
 tc-grps         = System
 tau_t           = 0.1
 ref_t           = 300
+gen-vel         = yes
+gen-temp        = 300
+gen-seed        = 42
 pcoupl          = no
 pbc             = xyz
 MDP

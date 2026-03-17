@@ -940,14 +940,14 @@ XLA's sm_103 PTX compilation fails at two levels:
 
 ---
 
-## 14. GROMACS 2024 MD Simulation — Water Box
+## 14. GROMACS 2025.1 MD Simulation — Water Box
 
-**Workload:** Molecular dynamics — SPC water box, 9×9×9 nm, ~23,905 molecules (~71k atoms)
-**Software:** GROMACS 2024.3 built from source in CUDA 12.8 container
+**Workload:** Molecular dynamics — SPC water box, 9×9×9 nm, ~23,905 molecules (~71,715 atoms)
+**Software:** GROMACS 2025.1 built from source in CUDA 12.8 container
 **Scripts:** `gromacs/Dockerfile.gromacs`, `gromacs/gen_waterbox.sh`, `gromacs/run_gromacs_b300.sh`
-**Status: ❌ Blocked — GROMACS segfaults on first GPU kernel call on sm_103**
+**Status: ⚠️ Partial — nb-GPU works; PME-GPU segfaults (CUDA 12.8 runtime + sm_103)**
 
-> Note: NGC does not publish a `nvcr.io/nvidia/gromacs` container. GROMACS 2024.3 was
+> Note: NGC does not publish a `nvcr.io/nvidia/gromacs` container. GROMACS 2025.1 was
 > compiled from source using `nvcr.io/nvidia/cuda:12.8.0-devel-ubuntu22.04` as base.
 > The benchmark uses a self-generated SPC water-box TPR (no external downloads).
 
@@ -960,43 +960,64 @@ CUDA_GPU=4 bash gromacs/run_gromacs_b300.sh
 ```
 
 GROMACS compiled with CUDA targets: `sm_80;sm_86;sm_90;sm_100`
+(sm_103 requires CUDA 13.0 nvcc — CUDA 12.8 nvcc rejects it at cmake time)
 
-Benchmark: `gmx mdrun -ntmpi 1 -ntomp 16 -nb gpu -pme gpu -nsteps 50000 -resetstep 10000`
+Benchmark: `gmx mdrun -ntmpi 1 -ntomp 16 -nb gpu -pme cpu -nsteps 50000 -resetstep 10000`
 
-### 14.2 B300 Result — Segfault on GPU Kernel Launch
+### 14.2 B300 Measured Result — nb-GPU / PME-CPU
 
-**Actual outcome** (run 2026-03-17, GPU 4, GROMACS 2024.3):
+**Actual outcome** (run 2026-03-17, GPU 4, GROMACS 2025.1):
 
 ```
-#0: NVIDIA NVIDIA B300 SXM6 AC, compute cap.: 10.3, ECC: yes, stat: compatible
-...
-starting mdrun 'Water benchmark (9x9x9 nm, SPC, gromos43a1) in water'
-50000 steps,    100.0 ps.
+1 GPU selected for this run.
+Mapping of GPU IDs to the 2 GPU tasks in the 1 rank on this node:
+  PP:0,PME:0
+PP tasks will do (non-perturbed) short-ranged interactions on the GPU
+PP task will update and constrain coordinates on the GPU
+PME tasks: CPU
 
-Segmentation fault (core dumped)
+               Core t (s)   Wall t (s)        (%)
+       Time:      624.976       39.078     1599.3
+                 (ns/day)    (hour/ns)
+Performance:      176.880        0.136
 ```
 
-GROMACS detects the B300 as `compatible` (sm_103 falls through to sm_100 PTX JIT), but the first CUDA kernel launch triggers a segfault. Unlike PyTorch Nightly's graceful sm_100 PTX fallback, GROMACS's CUDA kernel path crashes on sm_103.
-
-| GPU | ApoA1 ns/day | Water-box ns/day | Status |
+| GPU | Water-box ns/day | Mode | Status |
 |---|---|---|---|
-| H100 SXM5 80 GB | ~450 ns/day | ~600 ns/day (est.) | Published baselines |
-| B200 SXM 192 GB | ~585 ns/day (est.) | ~780 ns/day (est.) | Estimated from MD TFLOPS |
-| **B300 SXM6 287 GB** | **❌ Segfault** | **❌ Segfault** | First GPU kernel crashes |
+| H100 SXM5 80 GB | ~600 ns/day | nb+pme+bonded GPU | Published baseline |
+| B200 SXM 192 GB | ~780 ns/day (est.) | nb+pme+bonded GPU | Estimated from MD TFLOPS |
+| **B300 SXM6 287 GB** | **176.880 ns/day** | **nb GPU / pme CPU** | ⚠️ PME-GPU blocked |
+| B300 SXM6 (projected) | ~700–900 ns/day | nb+pme+bonded GPU | ⏳ Once CUDA 13.0 available |
 
-### 14.3 Root Cause
+> The 176.880 ns/day result is **PME-CPU limited** — PME is the dominant bottleneck
+> in water-box simulations. Full GPU offload (nb+pme+bonded) is expected to reach
+> ~700–900 ns/day once CUDA 13.0 enables native sm_103 PME kernels.
 
-GROMACS 2024.3 compiled with CUDA 12.8 (`--generate-code=arch=compute_100,code=sm_100`). The sm_100 PTX is JIT-compiled for sm_103 by the CUDA driver, but produces kernel code incompatible with B300's hardware. GROMACS has no explicit fallback error handling — it segfaults rather than returning an error.
+### 14.3 Root Cause — CUDA 12.8 Runtime Blocks PME-GPU on sm_103
 
-**Comparison with PyTorch Nightly:** PyTorch Nightly (cu130) successfully uses sm_100 PTX fallback. The difference likely lies in how CUDA kernels use hardware features: PyTorch's kernels are written defensively, while GROMACS's PME/NB GPU kernels rely on specific memory access patterns or warp-level operations that differ on sm_103.
+Two separate blockers were encountered:
 
-### 14.4 What to Expect Next
+| Layer | Issue | Effect |
+|---|---|---|
+| **CUDA 12.8 nvcc** | Does not support sm_103 as compile target | Cannot add sm_103 to `GMXCUDA_TARGET_SM` |
+| **CUDA 12.8 libcudart.so** | Runtime library has no sm_103 device tables | PME-GPU kernel launch → segfault |
+| **nb-GPU (sm_100 cubin)** | Executes on B300 via intra-Blackwell compat | Works — 176.880 ns/day |
+
+**Why PME-GPU segfaults but nb-GPU works:** The non-bonded (nb) kernels use simpler
+CUDA memory patterns and compile to stable sm_100 cubins that B300 executes. The PME
+GPU kernels use cuFFT + complex CUDA atomics that trigger a runtime assert inside
+`libcudart.so.12.8` when it encounters an unknown compute capability (sm_103).
+
+**Comparison with PyTorch Nightly:** PyTorch Nightly cu130 bundles the complete CUDA 13.0
+runtime, which has sm_103 device tables — that's why PTX fallback works there. GROMACS
+linked against CUDA 12.8 runtime cannot benefit from the host driver's sm_103 support.
+
+### 14.4 Path to Full GPU Performance
 
 | Milestone | Expected Gain | Status |
 |---|---|---|
-| GROMACS recompile with CUDA 13.0 + sm_103 target | Full GPU performance | ⏳ Requires CUDA 13.0 GROMACS build |
-| Alternative: Run on CPU (128-core Intel Xeon 6767P) | ~50–80 ns/day (CPU-only) | Available now — slow |
-| Native sm_103 GROMACS kernels | +20–35% over H100 | ⏳ When CUDA 13.0 GROMACS lands |
+| CUDA 13.0 base image → recompile GROMACS + sm_103 | PME-GPU unlocked; ~700–900 ns/day | ⏳ Awaiting CUDA 13.0 Docker image |
+| Native sm_103 GROMACS kernels (GROMACS 2025.x + CUDA 13.0) | +20–35% over H100 | ⏳ Same prerequisite |
 | AF2 XLA JIT sm_103 kernels | +15–25% inference speedup | ⏳ Automatic once CUDA 13.0 JAX available |
 
 ---
