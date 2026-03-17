@@ -1,0 +1,19 @@
+FROM nvcr.io/nvidia/pytorch:25.03-py3
+
+# MLPerf loadgen + inference dependencies
+RUN pip install --no-cache-dir \
+    pybind11 \
+    transformers \
+    accelerate \
+    onnxruntime-gpu \
+    boto3 \
+    tqdm \
+    numpy
+
+# Build mlperf_loadgen from source (no pip package for sm_103 compatible build)
+RUN git clone --depth=1 https://github.com/mlcommons/inference.git /opt/mlperf/inference && \
+    cd /opt/mlperf/inference/loadgen && \
+    CFLAGS="-std=c++14" pip install --no-cache-dir .
+
+WORKDIR /opt/mlperf
+ENV PYTHONPATH=/opt/mlperf/inference:${PYTHONPATH:-}

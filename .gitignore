@@ -41,3 +41,4 @@ build/
 # Conda / pip
 *.conda
 pip-log.txt
+mlperf/logs/
