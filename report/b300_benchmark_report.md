@@ -9,12 +9,14 @@
 ## Insights
 - B300 hardware is superior to H100/B200, but current PyTorch releases lack native sm_103 kernel support, causing 3–4× lower throughput than expected.
 - Using the NGC 25.03 container (PyTorch 2.7, CUDA 12.8) gives major FP16 and FP32 speedups (+65% and +22–34%) over the conda environment, but BF16 remains similar.
+- **PyTorch Nightly 2.12.0.dev+cu130 is now the recommended stack for B300**: delivers +25–60% over NGC 25.03 with a working torch.compile path (+18–37% additional) — even without native sm_103 cubins.
 - GEMM and attention operations reach only 65–80% of theoretical peak due to software stack limitations.
 
 > **Note:** When running matrix multiplication (GEMM) and attention workloads on the B300 GPU, the measured performance (in TFLOPS) is only 65–80% of what the hardware is theoretically capable of. This is mainly because the current PyTorch and CUDA software stack does not have optimized kernels for B300’s architecture (sm_103), so it uses less efficient fallback code. As a result, the GPU cannot fully utilize its hardware potential for these operations.
 
-- Full performance will require future PyTorch releases with sm_103 cubins, working torch.compile, and model changes for FP8.
-- Recommendation: Use the NGC container for all B300 training; expect further gains as software matures.
+- Full peak performance will require future PyTorch releases with native sm_103 cubins and model changes for FP8/FP4.
+- **MLPerf Inference** (offline scenario): 4× B300 delivers 405.6 QPS (ResNet-50 FP16) and 1524.8 QPS (BERT-Large FP16) — both VALID results.
+- Recommendation: Use **PyTorch Nightly cu130** for all B300 training; NGC 25.03 as fallback if nightly instability is a concern.
 ---
 
 ## Table of Contents
@@ -620,10 +622,10 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 bash training/scripts/b300_training_nightly.sh \
 
 | Feature | Conda 2.10+cu130 | NGC 2.7+cu128 | **Nightly cu130** |
 |---|---|---|---|
-| sm_103 native cubins | No (sm_100 fallback) | No | **Validated at runtime** |
-| torch.compile / Triton sm_103 | Partial | Broken (ptxas 255) | **Experimental support** |
-| FP8 Tensor Core throughput | Partial (no te.Linear) | Partial | Partial |
-| **FP4 via torchao** | No | No | **Yes (14 PFLOPS B300)** |
+| sm_103 native cubins | No (sm_100 fallback) | No | **No** (sm_100 fallback; sm_120 present but ≠ sm_103) |
+| torch.compile / Triton | Partial | Broken (ptxas 255) | **Working** (sm_100 fallback; +18–37% speedup) |
+| FP8 Tensor Core throughput | Partial (no te.Linear) | Partial | **Better** (2.55 s/s, fastest precision) |
+| **FP4 via torchao** | No | No | API available; torchao nightly required (0.16.0 incompatible) |
 
 **FP4 context:** B300 Tensor Cores support hardware-accelerated dense FP4 at up to **14 PFLOPS** — 3× the FP8 rate (4.5 PFLOPS) and 6× BF16 (2.4 PFLOPS). CUTLASS 4.4 added explicit sm_103 block-scaled FP4 GEMM support. `torchao` exposes this from Python via `fp4_weight_only()` quantization.
 
@@ -745,8 +747,6 @@ by using `buf.ctypes.data` for the raw C pointer passed to `QuerySampleResponse`
 
 ### 12.2 Results (4× B300 SXM6, FP16, synthetic data)
 
-> *Run in progress — results will be filled in once `run_mlperf_b300.sh` completes on GPUs 4–7.*
-
 | Model | QPS (measured) | Batch | Result | Notes |
 |---|---|---|---|---|
 | ResNet-50 FP16 Offline | **405.6 QPS** | 256 | VALID | DataParallel, 4× B300 |
@@ -771,48 +771,57 @@ by using `buf.ctypes.data` for the raw C pointer passed to `QuerySampleResponse`
 
 ### Overall Performance Summary
 
-| Environment | BF16 (s/s) | FP16 (s/s) | FP32+TF32 (s/s) | Recommendation |
-|---|---|---|---|---|
-| Conda PyTorch 2.10+cu130 | 1.58 | 1.00 | 0.94 | BF16 only |
-| **NGC 25.03 PyTorch 2.7+cu128** | **1.60** | **1.65** | **1.26** | **All precision modes** |
+| Environment | BF16 (s/s) | FP16 (s/s) | FP32+TF32 (s/s) | FP8 (s/s) | Recommendation |
+|---|---|---|---|---|---|
+| Conda PyTorch 2.10+cu130 | 1.58 | 1.00 | 0.94 | 1.12 | BF16 only; baseline |
+| NGC 25.03 PyTorch 2.7+cu128 | 1.60 | 1.65 | 1.26 | 1.60 | All precision modes |
+| **Nightly 2.12.0.dev+cu130** | **2.00** | **2.30** | **2.45** | **2.55** | **Recommended — fastest across all modes** |
+| Nightly + torch.compile | **2.74** | **2.72** | — | — | **Peak throughput** |
 
 ### Verdict
 
-**Use the NGC 25.03 container (`pangu-s2s-ngc:latest`) for all B300 training.** Reasons:
+**Use PyTorch Nightly cu130 (`pt-nightly-cu130` env) for all B300 training.** Reasons:
 
-1. **FP16 throughput +65%** — major improvement; FP16 is now faster than BF16
-2. **FP32 throughput +22–34%** — significantly faster for debugging or FP32 reference runs
-3. **Batch scaling more efficient** — batch_size=12 reaches 1.84 samples/sec (NGC) vs 1.17 (conda)
-4. **All dependencies pre-installed** — no 30s pip install on every launch
-5. **Self-bootstrapping script** — single command, auto-builds image if missing
+1. **BF16 +25% over NGC** — the most common training precision gains significantly
+2. **FP16 +39% over NGC** — nightly is now clearly faster across every precision
+3. **FP8 is now the fastest precision** — 2.55 s/s vs 1.60 NGC; Transformer Engine improving
+4. **torch.compile works** — unlike NGC (ptxas crash); +18–37% additional speedup over eager
+5. **Better NCCL** — 2.29.3+cuda13.1 vs NGC's 2.25.1; better DDP communication overlap
+6. **Self-bootstrapping script** — `b300_training_nightly.sh` creates the conda env on first run
+
+> **Fallback:** If nightly instability is a concern (e.g., production runs), use NGC 25.03 as the stable alternative — it still delivers +65% FP16 over conda.
 
 ### What to Expect Next (Future Improvements)
 
-| Improvement | Expected Gain | Trigger |
+| Improvement | Expected Gain | Status |
 |---|---|---|
-| PyTorch with native sm_103 cubins | +20–35% GEMM/Attention | PyTorch 2.11/2.12 release |
-| apex FusedAdam in NGC container | +5–15% optimizer step | Add `apex` to `Dockerfile.ngc` |
-| Full FP8 (`te.Linear` in model) | +30–50% vs BF16 | Model architecture surgery |
-| Working torch.compile on B300 | +10–25% over eager | CUDA 12.9+ or upstream Triton patch |
-| NGC 25.03 BF16 ≈ NGC 25.03 FP16 | Already converged | N/A — already at parity |
+| PyTorch with native sm_103 cubins | +20–35% GEMM/Attention | Not yet in `dev20260316`; watch for sm_103 in arch_list |
+| apex FusedAdam in NGC / nightly container | +5–15% optimizer step | Add `apex` to `Dockerfile.ngc` |
+| Full FP8 (`te.Linear` in model) | +30–50% vs BF16 | Requires model architecture surgery |
+| torch.compile on B300 | ✅ Working in nightly (+18–37%) | NGC still broken; use nightly |
+| torchao FP4 on B300 | 14 PFLOPS potential | Install torchao nightly alongside PyTorch nightly |
 
 ### Quick Start
 
+**Option A — Nightly (recommended):**
+```bash
+# From repo root — self-bootstrapping, creates pt-nightly-cu130 env if missing
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash training/scripts/b300_training_nightly.sh \
+    2>&1 | tee b300_results_nightly.log
+```
+
+**Option B — NGC Container (stable fallback):**
 ```bash
 # Build image once (auto-triggered by script if missing)
-cd /home/rdesouz4/scratchrdesouz4/b300/pangus2s
 sg docker -c "docker build -f Dockerfile.ngc -t pangu-s2s-ngc:latest ."
 
 # Run full benchmark suite
-bash /home/rdesouz4/scratchrdesouz4/b300/pangus2s/dsai/b300_training_ngc.sh \
+NGC_GPUS=0,1,2,3 bash training/scripts/b300_training_ngc.sh \
     2>&1 | tee b300_results_ngc.log
-
-# Target different GPUs
-NGC_GPUS=0,1,2,3 bash b300_training_ngc.sh 2>&1 | tee b300_results_ngc.log
 ```
 
 ---
 
 *Report generated from benchmarks run on 2026-03-16/17 on node b301.*
 *All results: 50 training steps, Pangu S2S 79M parameters, 4× NVIDIA B300 SXM6 AC.*
-*Section 11 (nightly) results pending — will be updated once `b300_training_nightly.sh` completes.*
+*PyTorch Nightly: `2.12.0.dev20260316+cu130`. MLPerf Inference: synthetic data, offline scenario.*
