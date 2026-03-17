@@ -1,6 +1,6 @@
 # NVIDIA B300 SXM6 — Full Benchmark & Evaluation Report
 
-**Date:** 2026-03-16
+**Date:** 2026-03-17
 **System:** `b301` — NVIDIA B300 SXM6 AC (Blackwell, SM 10.3)
 **Author:** Juan C. Perafan and Ricardo S. Jacomini
 
