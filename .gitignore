@@ -7,6 +7,8 @@ dataset/*.zarr
 # Training outputs
 training/results/
 training/scripts/results.*
+results/S2S/
+cuda_diag.log
 *.log
 *.out
 *.err

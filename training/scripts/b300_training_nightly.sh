@@ -16,13 +16,21 @@
 # Usage:
 #   CUDA_VISIBLE_DEVICES=4,5,6,7 bash b300_training_nightly.sh 2>&1 | tee nightly_results.log
 #
+# 若出现 FileNotFoundError: .../1979_0000.h5，需指定数据集路径：
+#   DATASET_DIR=/path/to/era5_dataset bash b300_training_nightly.sh
+#
 # ============================================================================
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 TRAIN_SCRIPT="${SCRIPT_DIR}/../faster_train.py"
 YAML_CONFIG="${SCRIPT_DIR}/../config/exp1_dsai.yaml"
+
+# 数据集路径：exp1_dsai.yaml 中 data_dir 默认为 rdesouz4 用户路径，需通过 DATASET_DIR 覆盖
+# Usage: DATASET_DIR=/path/to/era5_dataset bash b300_training_nightly.sh
+DATASET_DIR="${DATASET_DIR:-}"
 
 NIGHTLY_ENV="${NIGHTLY_ENV:-/scratch/rdesouz4/envs/pt-nightly-cu130}"
 PYTHON="${NIGHTLY_ENV}/bin/python"
@@ -152,7 +160,12 @@ sep() {
 
 BENCH_GPUS=4
 B300_BUCKET_MB=512
-COMMON="--epochs 1 --max-steps 50 --fresh_start --ddp-static-graph --max-grad-norm 1.0 --log-every-n-steps 100 --metrics-every 500 --accum-steps 1"
+DATA_DIR_ARGS=""
+if [ -n "${DATASET_DIR}" ]; then
+    DATA_DIR_ARGS="--data-dir-override ${DATASET_DIR}"
+    echo "==> Using DATASET_DIR: ${DATASET_DIR}"
+fi
+COMMON="--epochs 1 --max-steps 50 --fresh_start --ddp-static-graph --max-grad-norm 1.0 --log-every-n-steps 100 --metrics-every 500 --accum-steps 1 ${DATA_DIR_ARGS}"
 
 run_training() {
     local name="$1"
@@ -235,6 +248,16 @@ if [ ! -f "$TRAIN_SCRIPT" ]; then
     echo "ERROR: Training script not found: $TRAIN_SCRIPT"
     exit 1
 fi
+
+# 数据集预检查（exp1_dsai.yaml 默认 data_dir 为 rdesouz4 用户路径，若不存在需设置 DATASET_DIR）
+DATA_DIR_TO_CHECK="${DATASET_DIR:-/home/rdesouz4/scratchrdesouz4/b300/pangus2s/dataset}"
+if [ ! -f "${DATA_DIR_TO_CHECK}/1979_0000.h5" ]; then
+    echo "ERROR: Dataset file not found: ${DATA_DIR_TO_CHECK}/1979_0000.h5"
+    echo "  exp1_dsai.yaml 默认路径可能不存在于当前节点。请设置 DATASET_DIR："
+    echo "  DATASET_DIR=/path/to/era5_dataset bash $0"
+    exit 1
+fi
+echo "==> Dataset: ${DATA_DIR_TO_CHECK}"
 
 # ============================================================================
 # TASK 1 — Precision Sweep (4 GPU, batch_size=8)
