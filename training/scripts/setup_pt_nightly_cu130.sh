@@ -66,11 +66,14 @@ else
     echo ">>> 使用已有 Conda: ${MINICONDA_DIR}"
 fi
 
-# 初始化 conda（当前 shell）
+# 初始化 conda（当前 shell + 持久化到配置文件，使新开终端也能用 conda）
 CONDA_EXE="${MINICONDA_DIR}/bin/conda"
 if [ -f "${CONDA_EXE}" ]; then
     set +e
     eval "$("${CONDA_EXE}" shell.bash hook)"
+    # 持久化 conda 初始化到 ~/.bashrc / ~/.zshrc，新终端无需手动 conda init
+    "${CONDA_EXE}" init bash 2>/dev/null || true
+    [ -f "$HOME/.zshrc" ] && "${CONDA_EXE}" init zsh 2>/dev/null || true
     set -e
 fi
 
@@ -159,6 +162,10 @@ echo ""
 echo "=========================================================================="
 echo "  部署完成"
 echo "=========================================================================="
+echo ""
+echo "首次使用 conda 请先执行以下之一（conda init 已写入 ~/.bashrc）:"
+echo "  source ~/.bashrc     # 当前终端生效"
+echo "  或新开一个终端"
 echo ""
 echo "激活环境:"
 echo "  conda activate ${CONDA_ENV_NAME}"
