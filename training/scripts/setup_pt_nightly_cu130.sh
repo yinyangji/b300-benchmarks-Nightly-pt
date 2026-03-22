@@ -9,7 +9,7 @@
 #   bash training/scripts/setup_pt_nightly_cu130.sh --skip-conda   # 若已安装 conda
 #
 # 环境变量:
-#   CONDA_PREFIX   - 环境安装路径，默认 $HOME/miniconda3/envs/pt-nightly-cu130
+#   CONDA_ENV_NAME - conda 环境名称，默认 pt-nightly-cu130
 #   MINICONDA_DIR  - Miniconda 安装目录，默认 $HOME/miniconda3
 # ============================================================================
 
@@ -22,12 +22,13 @@ for arg in "$@"; do
     [ "$arg" = "--skip-conda" ] && SKIP_CONDA=1
 done
 
-CONDA_PREFIX="${CONDA_PREFIX:-$HOME/miniconda3/envs/pt-nightly-cu130}"
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-pt-nightly-cu130}"
 MINICONDA_DIR="${MINICONDA_DIR:-$HOME/miniconda3}"
+CONDA_ENV_PATH="${MINICONDA_DIR}/envs/${CONDA_ENV_NAME}"
 
 echo "=========================================================================="
 echo "  pt-nightly-cu130 环境部署"
-echo "  CONDA_PREFIX=$CONDA_PREFIX"
+echo "  环境名称: ${CONDA_ENV_NAME}"
 echo "  $(date)"
 echo "=========================================================================="
 
@@ -56,7 +57,7 @@ if [ "$SKIP_CONDA" != "1" ] && [ ! -f "${MINICONDA_DIR}/bin/conda" ]; then
     echo ""
     echo ">>> 安装 Miniconda 到 ${MINICONDA_DIR} ..."
     mkdir -p "$(dirname "${MINICONDA_DIR}")"
-    wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/Miniconda3-latest-Linux-x86_64.sh
+    wget -q https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/Miniconda3-latest-Linux-x86_64.sh
     bash /tmp/Miniconda3-latest-Linux-x86_64.sh -b -p "${MINICONDA_DIR}"
     rm -f /tmp/Miniconda3-latest-Linux-x86_64.sh
     echo "    完成"
@@ -68,22 +69,44 @@ fi
 # 初始化 conda（当前 shell）
 CONDA_EXE="${MINICONDA_DIR}/bin/conda"
 if [ -f "${CONDA_EXE}" ]; then
-    eval "$("${CONDA_EXE}" shell.bash hook 2>/dev/null)" || true
+    set +e
+    eval "$("${CONDA_EXE}" shell.bash hook)"
+    set -e
 fi
 
 # ----------------------------------------------------------------------------
-# 2. 创建 conda 环境
+# 2. 创建 conda 环境（命名环境 pt-nightly-cu130）
 # ----------------------------------------------------------------------------
 echo ""
-echo ">>> 创建环境 pt-nightly-cu130 (Python 3.11) ..."
-if [ -f "${CONDA_PREFIX}/bin/python" ]; then
+echo ">>> 创建环境 ${CONDA_ENV_NAME} (Python 3.11) ..."
+if [ -f "${CONDA_ENV_PATH}/bin/python" ]; then
     echo "    环境已存在，跳过创建"
 else
-    "${MINICONDA_DIR}/bin/conda" create -y -p "${CONDA_PREFIX}" python=3.11
+    conda create -y -n "${CONDA_ENV_NAME}" python=3.11 \
+        -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main \
+        -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free \
+        -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge \
+        --override-channels
 fi
 
-PIP="${CONDA_PREFIX}/bin/pip"
-PYTHON="${CONDA_PREFIX}/bin/python"
+# ----------------------------------------------------------------------------
+# 2.5 激活 conda 环境并验证
+# ----------------------------------------------------------------------------
+echo ""
+echo ">>> 激活环境 ${CONDA_ENV_NAME} ..."
+conda activate "${CONDA_ENV_NAME}"
+
+# 检查激活是否成功
+if [ "${CONDA_PREFIX}" != "${CONDA_ENV_PATH}" ]; then
+    echo "    错误: conda 激活失败"
+    echo "    期望 CONDA_PREFIX=${CONDA_ENV_PATH}"
+    echo "    实际 CONDA_PREFIX=${CONDA_PREFIX:-未设置}"
+    exit 1
+fi
+echo "    已激活: ${CONDA_PREFIX}"
+
+PIP="${CONDA_ENV_PATH}/bin/pip"
+PYTHON="${CONDA_ENV_PATH}/bin/python"
 
 # ----------------------------------------------------------------------------
 # 3. 安装依赖（优先用 requirements-nightly-cu130.txt 精确复现）
@@ -121,8 +144,13 @@ print(f'PyTorch:  {torch.__version__}')
 print(f'CUDA:     {torch.version.cuda}')
 print(f'devices:  {torch.cuda.device_count()}')
 if torch.cuda.device_count() > 0:
-    x = torch.zeros(1, device='cuda:0')
-    print('CUDA 初始化: OK')
+    try:
+        x = torch.zeros(1, device='cuda:0')
+        print('CUDA 初始化: OK')
+    except RuntimeError as e:
+        err = str(e)
+        print('CUDA 张量创建失败 (B300 上常见 Error 802):', err[:60] + '...' if len(err) > 60 else err)
+        print('  环境已部署成功。请在新终端中手动验证，详见 NOTE_B300_CUDA_TROUBLESHOOTING.md')
 else:
     print('CUDA 初始化: 无 GPU 或需检查驱动')
 "
@@ -133,8 +161,7 @@ echo "  部署完成"
 echo "=========================================================================="
 echo ""
 echo "激活环境:"
-echo "  conda activate ${CONDA_PREFIX}"
-echo "  或: source ${MINICONDA_DIR}/bin/activate ${CONDA_PREFIX}"
+echo "  conda activate ${CONDA_ENV_NAME}"
 echo ""
 echo "运行前建议（避免 LD_LIBRARY_PATH 冲突）:"
 echo "  unset LD_LIBRARY_PATH"
